@@ -584,11 +584,11 @@ impl Client {
     }
 }
 
-pub trait Api {
-    type FutureUnit: Future<Item = (), Error =io::Error> + Sized;
-    type FutureValues: Future<Item = Vec<Value>, Error =io::Error> + Sized;
-    type FutureU64: Future<Item = u64, Error =io::Error> + Sized;
-    type FutureString: Future<Item = String, Error =io::Error> + Sized;
+pub trait Api<E> {
+    type FutureUnit: Future<Item = (), Error = E> + Sized;
+    type FutureValues: Future<Item = Vec<Value>, Error = E> + Sized;
+    type FutureU64: Future<Item = u64, Error = E> + Sized;
+    type FutureString: Future<Item = String, Error = E> + Sized;
 
     fn set(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32) -> Self::FutureUnit;
     fn add(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32) -> Self::FutureUnit;
@@ -606,7 +606,7 @@ pub trait Api {
     fn version(&self) -> Self::FutureString;
 }
 
-impl<T: Service<Request = Request, Response = Response, Error = io::Error>> Api for T
+impl<T: Service<Request = Request, Response = Response, Error = io::Error>> Api<io::Error> for T
     where T::Future: Future<Item = Response, Error = io::Error> + Sized {
     type FutureUnit = Then<T::Future, FutureResult<(), io::Error>, fn(Result<Response, io::Error>) -> FutureResult<(), io::Error>>;
     type FutureValues = Then<T::Future, FutureResult<Vec<Value>, io::Error>, fn(Result<Response, io::Error>) -> FutureResult<Vec<Value>, io::Error>>;
@@ -768,14 +768,15 @@ impl<T: Service<Request = Request, Response = Response, Error = io::Error>> Api 
     }
 }
 
-pub trait ApiHelper {
-    type FutureValue: Future<Item = Value, Error =io::Error> + Sized;
+pub trait ApiHelper<E> {
+    type FutureValue: Future<Item = Value, Error = E> + Sized;
 
     fn get_one(&self, key: String) -> Self::FutureValue;
     fn gets_one(&self, key: String) -> Self::FutureValue;
 }
 
-impl<T: Api> ApiHelper for T {
+impl<T, E> ApiHelper<E> for T
+    where T: Api<E> {
     type FutureValue = Map<T::FutureValues, fn(Vec<Value>) -> Value>;
 
     fn get_one(&self, key: String) -> Self::FutureValue {
@@ -801,6 +802,55 @@ impl Service for Client {
 
     fn call(&self, req: Request) -> Self::Future {
         Box::new(self.inner.call(req))
+    }
+}
+
+pub struct ApiService<T> {
+// TODO: T should really be an Api
+    api: T
+}
+
+impl<T> ApiService<T> {
+    pub fn new(api: T) -> Logger<T> {
+        Logger{api: api}
+    }
+}
+
+impl<T> Service for ApiService<T>
+    where T: Api<_> {
+    type Request = Request;
+    type Response = Response;
+    type Error = io::Error;
+    type Future = Box<Future<Item = Response, Error = io::Error>>;
+
+    fn call(&self, req: Request) -> Self::Future {
+        Box::new(match req {
+            Request::Set{key, value, flags, expiry} => {
+                self.api.set(key, value, flags, expiry)
+                    .then(|result| {
+                        future::done(Ok(Response::Stored))
+                    })
+            },
+/*
+    fn set(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32) -> Self::FutureUnit;
+    fn add(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32) -> Self::FutureUnit;
+    fn replace(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32) -> Self::FutureUnit;
+    fn append(&self, key: String, value: Vec<u8>) -> Self::FutureUnit;
+    fn prepend(&self, key: String, value: Vec<u8>) -> Self::FutureUnit;
+    fn cas(&self, key: String, value: Vec<u8>, flags: u16, expiry: u32, cas: u64) -> Self::FutureUnit;
+    fn get(&self, keys: Vec<String>) -> Self::FutureValues;
+    fn gets(&self, keys: Vec<String>) -> Self::FutureValues;
+    fn delete(&self, key: String) -> Self::FutureUnit;
+    fn incr(&self, key: String, value: u64) -> Self::FutureU64;
+    fn decr(&self, key: String, value: u64) -> Self::FutureU64;
+    fn touch(&self, key: String, expiry: u32) -> Self::FutureUnit;
+    fn flush_all(&self, delay: u32) -> Self::FutureUnit;
+    fn version(&self) -> Self::FutureString;
+*/
+            _ => {
+                future::done(Ok(Response::Stored))
+            }
+        })
     }
 }
 
